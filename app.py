@@ -1,104 +1,86 @@
+#Huerta Rodríguez Sofía
+#Martínez Salinas Emiliano 5AM1
 
-import pandas as pd
 import streamlit as st
-import plotly.graph_objects as go
-from pathlib import Path
-
-st.set_page_config(page_title="NBA Dashboard (ELO dataset)", page_icon="🏀", layout="wide")
-st.title("🏀 Dashboard NBA – Acumulado W/L por temporada y equipo (nba_all_elo.csv)")
+import pandas as pd
+import matplotlib.pyplot as plt
+st.set_page_config(page_title="Dashboard de la NBA", layout="wide")
 
 @st.cache_data
-def load_data(path: str) -> pd.DataFrame:
+def cargar_datos(path):
     df = pd.read_csv(path)
+    df["date_game"]= pd.to_datetime(df["date_game"])
+    df["is_playoffs"] = pd.to_numeric(df["is_playoffs"], errors="coerce").fillna(0).astype(int)
+    return df                             
 
-    # Renombrar columnas del dataset 'nba_all_elo.csv' a nombres estándar
-    df = df.rename(columns={
-        "year_id": "season",
-        "fran_id": "team",
-        "date_game": "game_date"
-    })
+df = cargar_datos("nba_all_elo.csv")
+st.title ("Visualización de estadísticas históricas de la NBA")
 
-    # Tipos y limpieza
-    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce", format="%m/%d/%Y")
-    df = df.dropna(subset=["game_date"])
+#Barra lateral
+st.sidebar.header("Filtrar por")
+years = sorted(df["year_id"].unique().tolist())
+year= st.sidebar.selectbox("Selecciona el año", years, index=len(years)-1)
 
-    if "is_playoffs" in df.columns:
-        df["is_playoffs"] = df["is_playoffs"].astype(int).astype(bool)
+
+#Equipos dependiendo del año
+if "team_id" in df.columns:
+    equipos_disponibles = df[df["year_id"] == year]["team_id"].unique()
+else:
+    equipos_disponibles = df[df["year_id"] == year]["fran_id"].unique()
+    
+equipos_disponibles = sorted(equipos_disponibles)
+equipo = st.sidebar.selectbox("Selecciona un equipo", equipos_disponibles)
+tipos_juego = ["Temporada regular", "Playoffs", "Ambos"]
+modo = st.sidebar.radio("Tipo de juegos", tipos_juego, index=0)
+    
+
+#Filtrar por
+mask_base = (df["year_id"] == year) & ((df["team_id"] == equipo) if "team_id" in df.columns else (df["fran_id"] == equipo))
+if modo == "Temporada regular":
+    mask = mask_base&(df["is_playoffs"] == 0)
+elif modo == "Playoffs":
+    mask = mask_base&(df["is_playoffs"] == 1)
+else:
+    mask = mask_base
+base = df.loc[mask].sort_values("date_game").copy()
+
+#En caso de que no haya datos
+if base.empty:
+    st.warning("No hay juegos disponibles :(")
+    st.stop()
+
+#Acumulados W/L
+base["win_flag"] = (base["game_result"] == "W").astype(int)
+base["loss_flag"] = (base["game_result"] == "L").astype(int)
+base["Wins_cum"] = base["win_flag"].cumsum()
+base["Losses_cum"] = base["loss_flag"].cumsum()
+
+columna1,columna2 = st.columns([2,1], gap="large")
+
+with columna1:
+    st.subheader("Acumulado de juegos ganados y perdidos")
+    fig1 = plt.figure(figsize=(10,4))
+    plt.plot(base["date_game"], base["Wins_cum"], label="Ganados", linewidth=2)
+    plt.plot(base["date_game"], base["Losses_cum"], label="Perdidos", linewidth=2)
+    plt.xlabel("Fecha del juego"); plt.ylabel("Acumulado"); plt.legend(); plt.tight_layout()
+    st.pyplot(fig1)
+
+with columna2:
+    st.subheader("Porcentaje de juegos ganados y perdidos")
+    wins = int(base["win_flag"].sum())
+    losses = int(base["loss_flag"].sum())
+    total = wins + losses
+    st.metric("Total de juegos", total)
+
+    if total == 0:
+        st.info("No hay juegos para graficar :(")
     else:
-        df["is_playoffs"] = False
+        fig2 = plt.figure(figsize=(4,4))
+        plt.pie([wins, losses], labels=["Ganados", "Perdidos"], autopct="%1.1f%%", startangle=90)
+        plt.axis("equal")
+        st.pyplot(fig2)
+    
 
-    df["game_result"] = df["game_result"].astype(str).upper().str.strip()
-    df = df[df["game_result"].isin(["W", "L"])]
 
-    if "gameorder" in df.columns:
-        df = df.sort_values(["game_date", "gameorder"])
-    else:
-        df = df.sort_values("game_date")
 
-    return df
 
-DATA_PATH = Path("data") / "nba_all_elo.csv"
-df = load_data(str(DATA_PATH))
-
-# --------- Sidebar ---------
-st.sidebar.header("Filtros")
-years = sorted(df["season"].unique().tolist())
-year = st.sidebar.selectbox("Año (season)", years, index=years.index(max(years)) if years else 0)
-teams_in_year = sorted(df.loc[df["season"] == year, "team"].unique().tolist())
-team = st.sidebar.selectbox("Equipo (franquicia)", teams_in_year, index=0 if teams_in_year else None)
-
-try:
-    choice = st.pills("Tipo de juegos", ["Ambos", "Temporada regular", "Playoffs"], selection_mode="single")
-except Exception:
-    choice = st.radio("Tipo de juegos", ["Ambos", "Temporada regular", "Playoffs"], index=0)
-
-# --------- Filtrado ---------
-subset = df[(df["season"] == year) & (df["team"] == team)].copy()
-if choice == "Temporada regular":
-    subset = subset[subset["is_playoffs"] == False]
-elif choice == "Playoffs":
-    subset = subset[subset["is_playoffs"] == True]
-subset = subset.sort_values(["game_date", "gameorder"] if "gameorder" in subset.columns else "game_date")
-
-# --------- Acumulados ---------
-subset["win"] = (subset["game_result"] == "W").astype(int)
-subset["loss"] = (subset["game_result"] == "L").astype(int)
-subset["cum_wins"] = subset["win"].cumsum()
-subset["cum_losses"] = subset["loss"].cumsum()
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader(f"Acumulado W/L – {team} · {year}")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=subset["game_date"], y=subset["cum_wins"], mode="lines+markers", name="Ganados (acumulado)"))
-    fig.add_trace(go.Scatter(x=subset["game_date"], y=subset["cum_losses"], mode="lines+markers", name="Perdidos (acumulado)"))
-    fig.update_layout(
-        xaxis_title="Fecha",
-        yaxis_title="Juegos acumulados",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=30, b=20),
-        height=520
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-with col2:
-    st.subheader("Porcentaje de la temporada")
-    wins = int(subset["win"].sum())
-    losses = int(subset["loss"].sum())
-    pie = go.Figure(data=[go.Pie(labels=["Ganados", "Perdidos"], values=[wins, losses], hole=0.35)])
-    pie.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=520)
-    st.plotly_chart(pie, use_container_width=True)
-
-st.divider()
-c1, c2, c3 = st.columns(3)
-total = wins + losses
-pct = (wins / total * 100) if total > 0 else 0
-c1.metric("Total de juegos", f"{total}")
-c2.metric("Ganados", f"{wins}")
-c3.metric("Win %", f"{pct:.1f}%")
-
-with st.expander("Ver tabla de juegos"):
-    cols = ["game_date", "team", "game_result", "is_playoffs", "pts", "opp_fran", "opp_pts"]
-    cols = [c for c in cols if c in subset.columns]
-    st.dataframe(subset[cols], use_container_width=True)
